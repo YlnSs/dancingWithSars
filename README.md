@@ -105,7 +105,7 @@ Candidate change areas are exploratory indicators, not confirmed burned pixels.
 ### 1. Clone the repository
 
 ```bash
-git clone YOUR_GITHUB_REPOSITORY_URL
+git clone (https://github.com/YlnSs/nisar-wildfire-explorer.git)
 cd nisar-wildfire-explorer
 ```
 
