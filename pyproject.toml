@@ -4,5 +4,6 @@ version = "0.1.0"
 requires-python = ">=3.14"
 dependencies = [
     "h5py>=3.16.0",
+    "matplotlib>=3.11.2",
     "pyproj>=3.8.0",
 ]
