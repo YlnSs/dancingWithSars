@@ -1,32 +1,35 @@
+
 import json
 import h5py
 import numpy as np
+
 from pathlib import Path
 from pyproj import Transformer
 from shapely.geometry import shape
 from shapely.ops import transform as transform_geometry, unary_union
 from shapely import contains_xy
+from huggingface_hub import hf_hub_download
 
 
 # ==================================================
 # CONFIGURATION
 # ==================================================
 
-BASE_DIR = Path(__file__).resolve().parent
+#BASE_DIR = Path(__file__).resolve().parent
+
+DATA_REPO_ID = "FyS457/nisar-aksu-wildfire-data"
 
 FILES = {
-    "August 27": BASE_DIR / "datasets" / "NISAR_L2_PR_GCOV_029_028_A_020_2005_DHDH_A_20260827T030948_20260827T031013_P05023_N_P_J_001.h5",
-    "September 8": BASE_DIR / "datasets" / "NISAR_L2_PR_GCOV_030_028_A_020_2005_DHDH_A_20260908T030947_20260908T031013_P05023_N_F_J_001.h5",
-    "September 20": BASE_DIR / "datasets" / "NISAR_L2_PR_GCOV_031_028_A_020_2005_DHDH_A_20260920T030947_20260920T031013_P05023_F_F_J_001.h5",
+    "August 27": "NISAR_L2_PR_GCOV_029_028_A_020_2005_DHDH_A_20260827T030948_20260827T031013_P05023_N_P_J_001_aksu_roi.h5",
+    "September 8": "NISAR_L2_PR_GCOV_030_028_A_020_2005_DHDH_A_20260908T030947_20260908T031013_P05023_N_F_J_001_aksu_roi.h5",
+    "September 20": "NISAR_L2_PR_GCOV_031_028_A_020_2005_DHDH_A_20260920T030947_20260920T031013_P05023_F_F_J_001_aksu_roi.h5",
 }
 
-# Optional external EFFIS/Copernicus perimeter.
-# Put a WGS84 (longitude/latitude) GeoJSON here.
-PERIMETER_FILE = BASE_DIR / "datasets" / "aksu_fire_perimeter.geojson"
+PERIMETER_FILE = "aksu_fire_perimeter.geojson"
 
 # Study area in longitude/latitude (EPSG:4326).
-WEST, EAST = 30.680, 30.840
-SOUTH, NORTH = 37.020, 37.220
+WEST, EAST = 30.6802, 30.8398
+SOUTH, NORTH = 37.0202, 37.2198
 
 BASE_PATH = "science/LSAR/GCOV/grids/frequencyA"
 
@@ -48,20 +51,53 @@ THRESHOLD_MULTIPLIER = 3.0
 
 
 # ==================================================
+# DOWNLOAD DATA FROM HUGGING FACE
+# ==================================================
+
+def download_data_files():
+    """Download the public NISAR files and perimeter from Hugging Face."""
+
+    downloaded_files = {}
+
+    for date, filename in FILES.items():
+        downloaded_files[date] = Path(
+            hf_hub_download(
+                repo_id=DATA_REPO_ID,
+                filename=filename,
+                repo_type="dataset",
+            )
+        )
+
+    perimeter_path = Path(
+        hf_hub_download(
+            repo_id=DATA_REPO_ID,
+            filename=PERIMETER_FILE,
+            repo_type="dataset",
+        )
+    )
+
+    return downloaded_files, perimeter_path
+
+
+# ==================================================
 # HELPER FUNCTIONS
 # ==================================================
 
 def convert_to_db(data, valid_mask):
     """Convert linear radar power to decibels: 10 * log10(power)."""
+
     db_array = np.full(data.shape, np.nan, dtype=np.float32)
     np.log10(data, out=db_array, where=valid_mask)
     db_array[valid_mask] *= 10
+
     return db_array
 
 
 def detect_candidate_changes(change, common_mask):
     """Flag statistically unusual changes, not confirmed burned pixels."""
+
     valid_changes = change[common_mask]
+
     if valid_changes.size == 0:
         raise ValueError("No valid pixels available for change detection.")
 
@@ -71,8 +107,14 @@ def detect_candidate_changes(change, common_mask):
 
     lower = median_change - THRESHOLD_MULTIPLIER * robust_std
     upper = median_change + THRESHOLD_MULTIPLIER * robust_std
-    candidate_mask = common_mask & ((change < lower) | (change > upper))
-    percentage = float(np.sum(candidate_mask) / np.sum(common_mask) * 100)
+
+    candidate_mask = common_mask & (
+        (change < lower) | (change > upper)
+    )
+
+    percentage = float(
+        np.sum(candidate_mask) / np.sum(common_mask) * 100
+    )
 
     return {
         "mask": candidate_mask,
@@ -85,12 +127,13 @@ def detect_candidate_changes(change, common_mask):
     }
 
 
-def load_fire_perimeter(transformer):
+def load_fire_perimeter(perimeter_path, transformer):
     """Load a WGS84 GeoJSON perimeter and project it to the NISAR CRS."""
-    if not PERIMETER_FILE.exists():
+
+    if not perimeter_path.exists():
         return None, None
 
-    with PERIMETER_FILE.open("r", encoding="utf-8") as file:
+    with perimeter_path.open("r", encoding="utf-8") as file:
         document = json.load(file)
 
     if document.get("type") == "FeatureCollection":
@@ -99,11 +142,15 @@ def load_fire_perimeter(transformer):
             for feature in document.get("features", [])
             if feature.get("geometry")
         ]
+
         if not geometries:
             raise ValueError("The perimeter GeoJSON contains no geometries.")
+
         perimeter_wgs84 = unary_union(geometries)
+
     elif document.get("type") == "Feature":
         perimeter_wgs84 = shape(document["geometry"])
+
     else:
         perimeter_wgs84 = shape(document)
 
@@ -111,41 +158,58 @@ def load_fire_perimeter(transformer):
         raise ValueError("The fire-perimeter geometry is empty or invalid.")
 
     # GeoJSON coordinates are expected to be longitude/latitude (WGS84).
-    perimeter_utm = transform_geometry(transformer.transform, perimeter_wgs84)
+    perimeter_utm = transform_geometry(
+        transformer.transform,
+        perimeter_wgs84
+    )
+
     return perimeter_wgs84, perimeter_utm
 
 
 def polygon_boundary_coordinates(geometry):
     """Return Plotly line coordinates for Polygon or MultiPolygon outlines."""
+
     xs, ys = [], []
+
     if geometry is None:
         return xs, ys
 
-    polygons = list(geometry.geoms) if geometry.geom_type == "MultiPolygon" else [geometry]
+    polygons = (
+        list(geometry.geoms)
+        if geometry.geom_type == "MultiPolygon"
+        else [geometry]
+    )
+
     for polygon in polygons:
         rings = [polygon.exterior, *polygon.interiors]
+
         for ring in rings:
             coords = list(ring.coords)
+
             xs.extend([point[0] for point in coords] + [None])
             ys.extend([point[1] for point in coords] + [None])
+
     return xs, ys
 
 
 def calculate_region_statistics(change, common_mask, region_mask):
     """Compare a region with its complement using the same valid pixels."""
+
     inside = common_mask & region_mask
     outside = common_mask & ~region_mask
 
     def summarize(mask):
         values = change[mask]
+
         if values.size == 0:
             return {
                 "pixels": 0,
                 "median": None,
                 "mean": None,
                 "p25": None,
-                "p75": None
+                "p75": None,
             }
+
         return {
             "pixels": int(values.size),
             "median": float(np.median(values)),
@@ -156,7 +220,7 @@ def calculate_region_statistics(change, common_mask, region_mask):
 
     return {
         "inside": summarize(inside),
-        "outside": summarize(outside)
+        "outside": summarize(outside),
     }
 
 
@@ -165,6 +229,10 @@ def calculate_region_statistics(change, common_mask, region_mask):
 # ==================================================
 
 def load_analysis():
+
+    # Download files and receive their actual local cache paths.
+    downloaded_files, perimeter_path = download_data_files()
+
     transformer = Transformer.from_crs(
         "EPSG:4326",
         "EPSG:32636",
@@ -183,14 +251,12 @@ def load_analysis():
     min_y = min(point[1] for point in corners)
     max_y = max(point[1] for point in corners)
 
-    for date, file_path in FILES.items():
-        if not file_path.exists():
-            raise FileNotFoundError(
-                f"Missing NISAR file for {date}: {file_path}"
-            )
+    # Check the first acquisition and determine the AOI pixel window.
+    first_file_path = downloaded_files["August 27"]
 
-    with h5py.File(FILES["August 27"], "r") as file:
+    with h5py.File(first_file_path, "r") as file:
         grid = file[BASE_PATH]
+
         x = grid["xCoordinates"][:]
         y = grid["yCoordinates"][:]
 
@@ -226,10 +292,12 @@ def load_analysis():
         col_start, col_stop = cols[0], cols[-1] + 1
         row_start, row_stop = rows.min(), rows.max() + 1
 
+    # Read the required data from each downloaded acquisition.
     roi_data = {}
     valid_masks = {}
 
-    for date, file_path in FILES.items():
+    for date, file_path in downloaded_files.items():
+
         with h5py.File(file_path, "r") as file:
             grid = file[BASE_PATH]
 
@@ -256,7 +324,7 @@ def load_analysis():
 
             roi_data[date] = {
                 "HH": hh,
-                "HV": hv
+                "HV": hv,
             }
 
             valid_masks[date] = {
@@ -265,11 +333,11 @@ def load_analysis():
             }
 
     common_valid_hh = np.logical_and.reduce([
-        valid_masks[date]["HH"] for date in FILES
+        valid_masks[date]["HH"] for date in downloaded_files
     ])
 
     common_valid_hv = np.logical_and.reduce([
-        valid_masks[date]["HV"] for date in FILES
+        valid_masks[date]["HV"] for date in downloaded_files
     ])
 
     if not np.any(common_valid_hh):
@@ -278,10 +346,11 @@ def load_analysis():
     if not np.any(common_valid_hv):
         raise ValueError("No HV pixels are valid across all three dates.")
 
+    # Convert the radar power values to dB.
     hh_db = {}
     hv_db = {}
 
-    for date in FILES:
+    for date in downloaded_files:
         hh_db[date] = convert_to_db(
             roi_data[date]["HH"],
             valid_masks[date]["HH"]
@@ -311,15 +380,23 @@ def load_analysis():
     # Raster-cell centre coordinates, used for point-in-polygon testing.
     grid_x, grid_y = np.meshgrid(x_roi, y_roi)
 
-    perimeter_wgs84, perimeter_utm = load_fire_perimeter(transformer)
+    perimeter_wgs84, perimeter_utm = load_fire_perimeter(
+        perimeter_path,
+        transformer
+    )
 
     if perimeter_utm is not None:
-        perimeter_mask = contains_xy(perimeter_utm, grid_x, grid_y)
+        perimeter_mask = contains_xy(
+            perimeter_utm,
+            grid_x,
+            grid_y
+        )
         perimeter_status = "loaded"
     else:
         perimeter_mask = None
         perimeter_status = "missing"
 
+    # Project approximate neighbourhood centres.
     fire_projected = {}
 
     for name, (lon, lat) in FIRE_LOCATIONS.items():
@@ -336,6 +413,7 @@ def load_analysis():
             "latitude": lat,
         }
 
+    # Calculate changes, candidate areas, and statistics.
     change_maps = {}
     candidate_results = {}
     statistics = {}
@@ -381,7 +459,7 @@ def load_analysis():
                 )
 
     return {
-        "dates": list(FILES.keys()),
+        "dates": list(downloaded_files.keys()),
         "comparisons": [
             f"{before} -> {after}"
             for before, after in COMPARISONS

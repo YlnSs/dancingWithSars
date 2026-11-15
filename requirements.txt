@@ -1,0 +1,8 @@
+streamlit
+numpy
+plotly
+scipy
+h5py
+pyproj
+shapely
+huggingface_hub

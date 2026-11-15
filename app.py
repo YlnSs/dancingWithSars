@@ -41,7 +41,7 @@ st.markdown("""
 # LOAD ANALYSIS
 # ==================================================
 
-@st.cache_data(show_spinner="Processing NISAR radar data...")
+@st.cache_resource(show_spinner="Downloading and processing NISAR radar data...")
 def get_analysis():
     return load_analysis()
 
@@ -441,7 +441,7 @@ if results["perimeter_status"] == "loaded":
 else:
     st.warning(
         "No fire-perimeter GeoJSON was found. Add "
-        "datasets/aksu_fire_perimeter.geojson to enable the perimeter overlay "
+        "load aksu_fire_perimeter.geojson to enable the perimeter overlay "
         "and inside/outside comparison. The current maps remain NISAR-only."
     )
 
